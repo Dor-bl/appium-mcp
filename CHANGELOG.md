@@ -1,3 +1,9 @@
+## [1.1.8](https://github.com/appium/appium-mcp/compare/v1.1.7...v1.1.8) (2025-11-15)
+
+### Miscellaneous Chores
+
+* add repository and bugs to meet with npm provenance ([9e0ce59](https://github.com/appium/appium-mcp/commit/9e0ce59f751d3446537cb159b61aa14c70ab984f))
+
 ## [1.1.7](https://github.com/appium/appium-mcp/compare/v1.1.6...v1.1.7) (2025-11-15)
 
 ### Miscellaneous Chores
