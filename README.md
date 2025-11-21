@@ -62,12 +62,14 @@ Standard config works in most of the tools::
 ```json
 {
   "mcpServers": {
-    "mcp-appium": {
+    "appium-mcp": {
       "disabled": false,
       "timeout": 100,
       "type": "stdio",
       "command": "npx",
-      "args": ["appium-mcp"],
+      "args": [
+        "appium-mcp@latest"
+      ],
       "env": {
         "ANDROID_HOME": "/path/to/android/sdk",
         "CAPABILITIES_CONFIG": "/path/to/your/capabilities.json"
