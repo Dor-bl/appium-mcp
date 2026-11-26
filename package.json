@@ -16,6 +16,7 @@
   },
   "files": [
     "scripts",
+    "!scripts/android-smoke.mjs",
     "src",
     "!src/tests",
     "dist",

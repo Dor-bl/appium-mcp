@@ -616,6 +616,30 @@ npx @modelcontextprotocol/inspector dist/index.js
 
 Look for `[TOOL START]` / `[TOOL END]` (and `[TOOL END WITH ERROR]` on `isError: true`) in the server log. These confirm the logging wrapper in `src/tools/index.ts` is receiving your tool correctly.
 
+### 5. Android emulator smoke test
+
+The unit tests mock Appium and WebDriver, so they cannot tell whether a dependency upgrade (Appium, a driver, `webdriver`, `sharp`) still works at runtime. The **Android Emulator Smoke Test** workflow (`.github/workflows/android-smoke.yml`) closes that gap. It runs on pull requests and pushes to `main`, and can be started by hand from the Actions tab (`workflow_dispatch`).
+
+It boots an API 34 `google_apis` `x86_64` emulator, builds the server, and runs `scripts/android-smoke.mjs` twice through `.github/scripts/android-smoke.sh`:
+
+1. **Embedded mode** (the default for users): the UiAutomator2 driver runs inside the MCP server.
+2. **Remote mode**: against a standalone Appium server started from `node_modules/.bin/appium`, with the `uiautomator2` driver installed at the version `package-lock.json` resolved, so both modes test the same Appium and driver versions.
+
+The script starts `dist/index.js` over stdio with the MCP client SDK and calls the real tools in order: `select_device` (embedded mode only), `appium_session_management` `action=create` on the Settings app, `appium_screenshot` (inline PNG resized with `maxWidth`, then saved to a file), `appium_find_element`, `appium_gesture` `action=tap`, and `appium_session_management` `action=delete`. A failure names the step that broke, and the session is always deleted. When the job fails, the Appium server log, MCP server logs and logcat are uploaded as the `android-smoke-logs` artifact.
+
+To run it locally, boot an emulator (or connect a device) so that `adb devices` lists it, make sure `ANDROID_HOME` is set, and run:
+
+```bash
+npm run build
+node scripts/android-smoke.mjs --dry-run        # no device needed: checks tool names and argument shapes
+node scripts/android-smoke.mjs                  # embedded driver
+appium driver install uiautomator2              # remote mode only, once
+appium &                                        # remote mode only
+node scripts/android-smoke.mjs --remote-server-url=http://127.0.0.1:4723
+```
+
+Set `ANDROID_SERIAL` to pick a device when several are connected, `ANDROID_SMOKE_SELECTOR` to tap a different element (a `-android uiautomator` selector), `ANDROID_SMOKE_APP_PACKAGE` / `ANDROID_SMOKE_APP_ACTIVITY` to launch another app, and `ANDROID_SMOKE_SERVER_LOG` to save the MCP server's stderr to a file. `bash .github/scripts/android-smoke.sh` runs the same two passes as CI against whatever emulator is connected.
+
 ---
 
 ## Pre-Release Checklist
