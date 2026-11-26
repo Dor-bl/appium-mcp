@@ -238,7 +238,6 @@ async function takeScreenshots(client, sessionId) {
 
 /** Tap "Wait" on any ANR dialog covering the app, so the next steps see the app itself. */
 async function dismissSystemDialogs(client, sessionId) {
-  let dismissed = false;
   // One more check than taps, so a dialog cleared by the last tap is still noticed.
   for (let attempt = 1; attempt <= MAX_DIALOG_DISMISSALS + 1; attempt++) {
     const found = await client.callTool(
@@ -251,15 +250,6 @@ async function dismissSystemDialogs(client, sessionId) {
     );
     const buttonId = found.isError ? undefined : textOf(found).match(/^elementId '([^']+)'/m)?.[1];
     if (!buttonId) {
-      if (dismissed) {
-        // The dialog can leave another app (often the launcher) in front.
-        await callTool(client, 'dismiss dialog', 'appium_app_lifecycle', {
-          action: 'activate',
-          id: appPackage,
-          sessionId,
-        });
-        log(`dismiss dialog: brought ${appPackage} back to the front`);
-      }
       return;
     }
     if (attempt > MAX_DIALOG_DISMISSALS) {
@@ -267,7 +257,6 @@ async function dismissSystemDialogs(client, sessionId) {
     }
     log(`dismiss dialog: an "isn't responding" dialog is showing, tapping Wait (${attempt}/${MAX_DIALOG_DISMISSALS})`);
     await callTool(client, 'dismiss dialog', 'appium_gesture', {action: 'tap', elementUUID: buttonId, sessionId});
-    dismissed = true;
     await new Promise((resolve) => setTimeout(resolve, 1000));
   }
   throw new StepError(
@@ -303,8 +292,39 @@ async function describeScreen(client, sessionId) {
   }
 }
 
+const FIND_ROUNDS = 3;
+const FIND_ROUND_DELAY_MS = 3000;
+
+/**
+ * Bring the app under test to the front. Right after the emulator boots, the
+ * launcher (or an ANR dialog) can end up in front of the activity Appium started.
+ */
+async function activateApp(client, sessionId, round) {
+  await dismissSystemDialogs(client, sessionId);
+  await callTool(client, 'activate app', 'appium_app_lifecycle', {action: 'activate', id: appPackage, sessionId});
+  log(`activate app: ${appPackage} brought to the front (round ${round}/${FIND_ROUNDS})`);
+}
+
 async function findElement(client, sessionId) {
-  const failures = [];
+  let failures = [];
+  for (let round = 1; round <= FIND_ROUNDS; round++) {
+    if (round > 1) {
+      await new Promise((resolve) => setTimeout(resolve, FIND_ROUND_DELAY_MS));
+    }
+    await activateApp(client, sessionId, round);
+    failures = [];
+    const elementId = await findWithSelectors(client, sessionId, failures);
+    if (elementId) {
+      return elementId;
+    }
+  }
+  throw new StepError(
+    'find element',
+    `no selector matched an element after ${FIND_ROUNDS} rounds:\n${failures.join('\n')}\n${await describeScreen(client, sessionId)}`,
+  );
+}
+
+async function findWithSelectors(client, sessionId, failures) {
   for (const selector of selectors) {
     const args = {strategy: '-android uiautomator', selector, sessionId};
     log(`find element: appium_find_element ${JSON.stringify(args)}`);
@@ -326,10 +346,7 @@ async function findElement(client, sessionId) {
     log(`find element: ${elementId} (${selector})`);
     return elementId;
   }
-  throw new StepError(
-    'find element',
-    `no selector matched an element:\n${failures.join('\n')}\n${await describeScreen(client, sessionId)}`,
-  );
+  return undefined;
 }
 
 async function main() {
@@ -367,7 +384,6 @@ async function main() {
     }
     sessionId = await createSession(client);
     await takeScreenshots(client, sessionId);
-    await dismissSystemDialogs(client, sessionId);
     const elementId = await findElement(client, sessionId);
     const text = await callTool(client, 'get text', 'appium_get_text', {elementUUID: elementId, sessionId});
     log(`get text: ${textOf(text).split('\n').slice(1).join(' ')}`);
