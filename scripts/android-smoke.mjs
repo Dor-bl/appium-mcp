@@ -35,11 +35,22 @@ import {StdioClientTransport} from '@modelcontextprotocol/sdk/client/stdio.js';
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const SCREENSHOT_MAX_WIDTH = 360;
 
-const DEFAULT_SELECTORS = [
-  'new UiSelector().resourceId("android:id/title")',
-  'new UiSelector().textContains("Network")',
-  'new UiSelector().className("android.widget.TextView")',
-];
+/**
+ * Default elements to tap, most specific first. All are scoped to the app under
+ * test, so a system dialog in front of it fails the step instead of being tapped.
+ */
+function defaultSelectors(pkg) {
+  const scope = `new UiSelector().packageName("${pkg}")`;
+  return [
+    `${scope}.resourceId("android:id/title")`,
+    `${scope}.textContains("Network")`,
+    `${scope}.className("android.widget.TextView")`,
+  ];
+}
+
+/** "<App> isn't responding" (ANR) dialogs, common right after an emulator boots. */
+const ANR_WAIT_BUTTON = 'new UiSelector().resourceId("android:id/aerr_wait")';
+const MAX_DIALOG_DISMISSALS = 3;
 
 /** Every tool call this script makes, with the argument names it passes. */
 const TOOL_CONTRACT = {
@@ -74,7 +85,9 @@ const dryRun = options['dry-run'];
 const timeout = Number(process.env.ANDROID_SMOKE_TIMEOUT_MS) || 300_000;
 const appPackage = process.env.ANDROID_SMOKE_APP_PACKAGE || 'com.android.settings';
 const appActivity = process.env.ANDROID_SMOKE_APP_ACTIVITY || '.Settings';
-const selectors = process.env.ANDROID_SMOKE_SELECTOR ? [process.env.ANDROID_SMOKE_SELECTOR] : DEFAULT_SELECTORS;
+const selectors = process.env.ANDROID_SMOKE_SELECTOR
+  ? [process.env.ANDROID_SMOKE_SELECTOR]
+  : defaultSelectors(appPackage);
 const mode = remoteServerUrl ? `remote (${remoteServerUrl})` : 'embedded';
 
 if (!existsSync(serverEntry)) {
@@ -221,6 +234,34 @@ async function takeScreenshots(client, sessionId) {
   }
 }
 
+/** Tap "Wait" on any ANR dialog covering the app, so the next steps see the app itself. */
+async function dismissSystemDialogs(client, sessionId) {
+  for (let attempt = 1; attempt <= MAX_DIALOG_DISMISSALS; attempt++) {
+    const found = await client.callTool(
+      {
+        name: 'appium_find_element',
+        arguments: {strategy: '-android uiautomator', selector: ANR_WAIT_BUTTON, sessionId},
+      },
+      undefined,
+      {timeout},
+    );
+    if (found.isError) {
+      return;
+    }
+    const buttonId = textOf(found).match(/^elementId '([^']+)'/m)?.[1];
+    if (!buttonId) {
+      return;
+    }
+    log(`dismiss dialog: an "isn't responding" dialog is showing, tapping Wait (${attempt}/${MAX_DIALOG_DISMISSALS})`);
+    await callTool(client, 'dismiss dialog', 'appium_gesture', {action: 'tap', elementUUID: buttonId, sessionId});
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+  throw new StepError(
+    'dismiss dialog',
+    `an "isn't responding" dialog was still showing after ${MAX_DIALOG_DISMISSALS} taps on Wait`,
+  );
+}
+
 async function findElement(client, sessionId) {
   const failures = [];
   for (const selector of selectors) {
@@ -282,6 +323,7 @@ async function main() {
     }
     sessionId = await createSession(client);
     await takeScreenshots(client, sessionId);
+    await dismissSystemDialogs(client, sessionId);
     const elementId = await findElement(client, sessionId);
     const text = await callTool(client, 'get text', 'appium_get_text', {elementUUID: elementId, sessionId});
     log(`get text: ${textOf(text).split('\n').slice(1).join(' ')}`);
