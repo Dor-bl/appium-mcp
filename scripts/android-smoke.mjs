@@ -294,6 +294,8 @@ async function describeScreen(client, sessionId) {
 
 const FIND_ROUNDS = 3;
 const FIND_ROUND_DELAY_MS = 3000;
+/** Time for the app's first screen to render after it comes to the front. */
+const SETTLE_MS = 2000;
 
 /**
  * Bring the app under test to the front. Right after the emulator boots, the
@@ -303,6 +305,7 @@ async function activateApp(client, sessionId, round) {
   await dismissSystemDialogs(client, sessionId);
   await callTool(client, 'activate app', 'appium_app_lifecycle', {action: 'activate', id: appPackage, sessionId});
   log(`activate app: ${appPackage} brought to the front (round ${round}/${FIND_ROUNDS})`);
+  await new Promise((resolve) => setTimeout(resolve, SETTLE_MS));
 }
 
 async function findElement(client, sessionId) {
@@ -314,13 +317,27 @@ async function findElement(client, sessionId) {
     await activateApp(client, sessionId, round);
     failures = [];
     const elementId = await findWithSelectors(client, sessionId, failures);
-    if (elementId) {
-      return elementId;
+    if (!elementId) {
+      continue;
     }
+    // Read the text in the same round: if the screen was still changing, the
+    // element can already be gone, and the next round finds a fresh one.
+    const text = await client.callTool(
+      {name: 'appium_get_text', arguments: {elementUUID: elementId, sessionId}},
+      undefined,
+      {timeout},
+    );
+    if (text.isError) {
+      failures.push(`get text on ${elementId}: ${textOf(text).split('\n')[0]}`);
+      log(`get text: failed, retrying (${textOf(text).split('\n')[0]})`);
+      continue;
+    }
+    log(`get text: ${textOf(text).split('\n').slice(1).join(' ')}`);
+    return elementId;
   }
   throw new StepError(
     'find element',
-    `no selector matched an element after ${FIND_ROUNDS} rounds:\n${failures.join('\n')}\n${await describeScreen(client, sessionId)}`,
+    `no usable element found after ${FIND_ROUNDS} rounds:\n${failures.join('\n')}\n${await describeScreen(client, sessionId)}`,
   );
 }
 
@@ -385,8 +402,6 @@ async function main() {
     sessionId = await createSession(client);
     await takeScreenshots(client, sessionId);
     const elementId = await findElement(client, sessionId);
-    const text = await callTool(client, 'get text', 'appium_get_text', {elementUUID: elementId, sessionId});
-    log(`get text: ${textOf(text).split('\n').slice(1).join(' ')}`);
     await callTool(client, 'tap', 'appium_gesture', {action: 'tap', elementUUID: elementId, sessionId});
     log('tap: done');
   } catch (err) {
