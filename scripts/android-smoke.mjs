@@ -24,7 +24,7 @@
  *   ANDROID_SMOKE_TIMEOUT_MS     per-tool-call timeout (default 300000)
  */
 
-import {createWriteStream, existsSync, statSync} from 'node:fs';
+import {createWriteStream, existsSync, readFileSync, statSync} from 'node:fs';
 import {dirname, join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {parseArgs} from 'node:util';
@@ -33,6 +33,7 @@ import {Client} from '@modelcontextprotocol/sdk/client/index.js';
 import {StdioClientTransport} from '@modelcontextprotocol/sdk/client/stdio.js';
 
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const SCREENSHOT_MAX_WIDTH = 360;
 
 const DEFAULT_SELECTORS = [
   'new UiSelector().resourceId("android:id/title")',
@@ -46,6 +47,7 @@ const TOOL_CONTRACT = {
   appium_session_management: ['action', 'platform', 'capabilities', 'remoteServerUrl', 'sessionId'],
   appium_screenshot: ['returnRawBase64', 'maxWidth', 'sessionId'],
   appium_find_element: ['strategy', 'selector', 'sessionId'],
+  appium_get_text: ['elementUUID', 'sessionId'],
   appium_gesture: ['action', 'elementUUID', 'sessionId'],
 };
 
@@ -169,11 +171,19 @@ async function createSession(client) {
   return sessionId;
 }
 
+/** Width in pixels from a PNG's IHDR chunk, or undefined if the buffer is not a PNG. */
+function pngWidth(bytes) {
+  if (bytes.length < 24 || !bytes.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE)) {
+    return undefined;
+  }
+  return bytes.readUInt32BE(16);
+}
+
 async function takeScreenshots(client, sessionId) {
   // Inline image, resized through sharp so image processing is exercised as well.
   const raw = await callTool(client, 'screenshot (inline)', 'appium_screenshot', {
     returnRawBase64: true,
-    maxWidth: 360,
+    maxWidth: SCREENSHOT_MAX_WIDTH,
     sessionId,
   });
   const image = raw.content?.find((item) => item.type === 'image');
@@ -184,10 +194,17 @@ async function takeScreenshots(client, sessionId) {
     );
   }
   const bytes = Buffer.from(image.data, 'base64');
-  if (bytes.length <= PNG_SIGNATURE.length || !bytes.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE)) {
+  const inlineWidth = pngWidth(bytes);
+  if (inlineWidth === undefined) {
     throw new StepError('screenshot (inline)', `image is not a non-empty PNG (${bytes.length} bytes)`);
   }
-  log(`screenshot (inline): ${image.mimeType}, ${bytes.length} bytes`);
+  if (inlineWidth > SCREENSHOT_MAX_WIDTH) {
+    throw new StepError(
+      'screenshot (inline)',
+      `image is ${inlineWidth}px wide although maxWidth=${SCREENSHOT_MAX_WIDTH} was requested`,
+    );
+  }
+  log(`screenshot (inline): ${image.mimeType}, ${inlineWidth}px wide, ${bytes.length} bytes`);
 
   // Default mode: the server saves the PNG to disk and returns its path.
   const saved = await callTool(client, 'screenshot (file)', 'appium_screenshot', {sessionId});
@@ -197,7 +214,11 @@ async function takeScreenshots(client, sessionId) {
   if (!filepath || !existsSync(filepath) || statSync(filepath).size === 0) {
     throw new StepError('screenshot (file)', `screenshot file missing or empty: ${textOf(saved)}`);
   }
-  log(`screenshot (file): ${filepath}, ${statSync(filepath).size} bytes`);
+  const fullWidth = pngWidth(readFileSync(filepath));
+  log(`screenshot (file): ${filepath}, ${fullWidth}px wide, ${statSync(filepath).size} bytes`);
+  if (fullWidth !== undefined && fullWidth <= SCREENSHOT_MAX_WIDTH) {
+    log(`warning: the screen is only ${fullWidth}px wide, so maxWidth=${SCREENSHOT_MAX_WIDTH} did not resize anything`);
+  }
 }
 
 async function findElement(client, sessionId) {
@@ -262,6 +283,8 @@ async function main() {
     sessionId = await createSession(client);
     await takeScreenshots(client, sessionId);
     const elementId = await findElement(client, sessionId);
+    const text = await callTool(client, 'get text', 'appium_get_text', {elementUUID: elementId, sessionId});
+    log(`get text: ${textOf(text).split('\n').slice(1).join(' ')}`);
     await callTool(client, 'tap', 'appium_gesture', {action: 'tap', elementUUID: elementId, sessionId});
     log('tap: done');
   } catch (err) {

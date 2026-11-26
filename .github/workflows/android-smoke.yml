@@ -18,6 +18,8 @@ env:
   API_LEVEL: 34
   TARGET: google_apis
   ARCH: x86_64
+  # A real phone size: the runner's default AVD is 320x640, too small to exercise screenshot resizing.
+  PROFILE: pixel_6
 
 jobs:
   android-smoke:
@@ -57,7 +59,7 @@ jobs:
           path: |
             ~/.android/avd/*
             ~/.android/adb*
-          key: avd-${{ env.API_LEVEL }}-${{ env.TARGET }}-${{ env.ARCH }}
+          key: avd-${{ env.API_LEVEL }}-${{ env.TARGET }}-${{ env.ARCH }}-${{ env.PROFILE }}
 
       - name: Create AVD snapshot for caching
         if: steps.avd-cache.outputs.cache-hit != 'true'
@@ -66,6 +68,7 @@ jobs:
           api-level: ${{ env.API_LEVEL }}
           target: ${{ env.TARGET }}
           arch: ${{ env.ARCH }}
+          profile: ${{ env.PROFILE }}
           force-avd-creation: false
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           disable-animations: false
@@ -79,6 +82,7 @@ jobs:
           api-level: ${{ env.API_LEVEL }}
           target: ${{ env.TARGET }}
           arch: ${{ env.ARCH }}
+          profile: ${{ env.PROFILE }}
           force-avd-creation: false
           emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           disable-animations: true

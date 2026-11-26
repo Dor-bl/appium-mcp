@@ -620,12 +620,12 @@ Look for `[TOOL START]` / `[TOOL END]` (and `[TOOL END WITH ERROR]` on `isError:
 
 The unit tests mock Appium and WebDriver, so they cannot tell whether a dependency upgrade (Appium, a driver, `webdriver`, `sharp`) still works at runtime. The **Android Emulator Smoke Test** workflow (`.github/workflows/android-smoke.yml`) closes that gap. It runs on pull requests and pushes to `main`, and can be started by hand from the Actions tab (`workflow_dispatch`).
 
-It boots an API 34 `google_apis` `x86_64` emulator, builds the server, and runs `scripts/android-smoke.mjs` twice through `.github/scripts/android-smoke.sh`:
+It boots an API 34 `google_apis` `x86_64` emulator with the `pixel_6` profile, builds the server, and runs `scripts/android-smoke.mjs` twice through `.github/scripts/android-smoke.sh`:
 
 1. **Embedded mode** (the default for users): the UiAutomator2 driver runs inside the MCP server.
 2. **Remote mode**: against a standalone Appium server started from `node_modules/.bin/appium`, with the `uiautomator2` driver installed at the version `package-lock.json` resolved, so both modes test the same Appium and driver versions.
 
-The script starts `dist/index.js` over stdio with the MCP client SDK and calls the real tools in order: `select_device` (embedded mode only), `appium_session_management` `action=create` on the Settings app, `appium_screenshot` (inline PNG resized with `maxWidth`, then saved to a file), `appium_find_element`, `appium_gesture` `action=tap`, and `appium_session_management` `action=delete`. A failure names the step that broke, and the session is always deleted. When the job fails, the Appium server log, MCP server logs and logcat are uploaded as the `android-smoke-logs` artifact.
+The script starts `dist/index.js` over stdio with the MCP client SDK and calls the real tools in order: `select_device` (embedded mode only), `appium_session_management` `action=create` on the Settings app, `appium_screenshot` (inline PNG resized with `maxWidth`, then saved to a file), `appium_find_element`, `appium_get_text` (logs what will be tapped), `appium_gesture` `action=tap`, and `appium_session_management` `action=delete`. A failure names the step that broke, and the session is always deleted. When the job fails, the Appium server log, MCP server logs and logcat are uploaded as the `android-smoke-logs` artifact.
 
 To run it locally, boot an emulator (or connect a device) so that `adb devices` lists it, make sure `ANDROID_HOME` is set, and run:
 
