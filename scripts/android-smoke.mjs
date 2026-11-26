@@ -24,7 +24,7 @@
  *   ANDROID_SMOKE_TIMEOUT_MS     per-tool-call timeout (default 300000)
  */
 
-import {createWriteStream, existsSync, readFileSync, statSync} from 'node:fs';
+import {createWriteStream, existsSync, readFileSync, statSync, writeFileSync} from 'node:fs';
 import {dirname, join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {parseArgs} from 'node:util';
@@ -59,6 +59,8 @@ const TOOL_CONTRACT = {
   appium_screenshot: ['returnRawBase64', 'maxWidth', 'sessionId'],
   appium_find_element: ['strategy', 'selector', 'sessionId'],
   appium_get_text: ['elementUUID', 'sessionId'],
+  appium_app_lifecycle: ['action', 'id', 'sessionId'],
+  appium_get_page_source: ['sessionId'],
   appium_gesture: ['action', 'elementUUID', 'sessionId'],
 };
 
@@ -236,7 +238,9 @@ async function takeScreenshots(client, sessionId) {
 
 /** Tap "Wait" on any ANR dialog covering the app, so the next steps see the app itself. */
 async function dismissSystemDialogs(client, sessionId) {
-  for (let attempt = 1; attempt <= MAX_DIALOG_DISMISSALS; attempt++) {
+  let dismissed = false;
+  // One more check than taps, so a dialog cleared by the last tap is still noticed.
+  for (let attempt = 1; attempt <= MAX_DIALOG_DISMISSALS + 1; attempt++) {
     const found = await client.callTool(
       {
         name: 'appium_find_element',
@@ -245,21 +249,58 @@ async function dismissSystemDialogs(client, sessionId) {
       undefined,
       {timeout},
     );
-    if (found.isError) {
+    const buttonId = found.isError ? undefined : textOf(found).match(/^elementId '([^']+)'/m)?.[1];
+    if (!buttonId) {
+      if (dismissed) {
+        // The dialog can leave another app (often the launcher) in front.
+        await callTool(client, 'dismiss dialog', 'appium_app_lifecycle', {
+          action: 'activate',
+          id: appPackage,
+          sessionId,
+        });
+        log(`dismiss dialog: brought ${appPackage} back to the front`);
+      }
       return;
     }
-    const buttonId = textOf(found).match(/^elementId '([^']+)'/m)?.[1];
-    if (!buttonId) {
-      return;
+    if (attempt > MAX_DIALOG_DISMISSALS) {
+      break;
     }
     log(`dismiss dialog: an "isn't responding" dialog is showing, tapping Wait (${attempt}/${MAX_DIALOG_DISMISSALS})`);
     await callTool(client, 'dismiss dialog', 'appium_gesture', {action: 'tap', elementUUID: buttonId, sessionId});
+    dismissed = true;
     await new Promise((resolve) => setTimeout(resolve, 1000));
   }
   throw new StepError(
     'dismiss dialog',
     `an "isn't responding" dialog was still showing after ${MAX_DIALOG_DISMISSALS} taps on Wait`,
   );
+}
+
+/** Log which apps are on screen and save the page source next to the server log, to explain a miss. */
+async function describeScreen(client, sessionId) {
+  try {
+    const result = await client.callTool({name: 'appium_get_page_source', arguments: {sessionId}}, undefined, {
+      timeout,
+    });
+    const xml = textOf(result).match(/```xml ([\s\S]*)```/)?.[1];
+    if (result.isError || !xml) {
+      return `page source unavailable: ${textOf(result).split('\n')[0]}`;
+    }
+    const packages = [...new Set([...xml.matchAll(/ package="([^"]*)"/g)].map((m) => m[1]))];
+    const texts = [...new Set([...xml.matchAll(/ text="([^"]+)"/g)].map((m) => m[1]))].slice(0, 15);
+    let saved = '';
+    if (process.env.ANDROID_SMOKE_SERVER_LOG) {
+      const file = join(
+        dirname(process.env.ANDROID_SMOKE_SERVER_LOG),
+        `page-source-${remoteServerUrl ? 'remote' : 'embedded'}.xml`,
+      );
+      writeFileSync(file, xml);
+      saved = `\npage source saved to ${file}`;
+    }
+    return `packages on screen: ${packages.join(', ') || '(none)'}\ntexts on screen: ${texts.join(' | ') || '(none)'}${saved}`;
+  } catch (err) {
+    return `page source unavailable: ${err instanceof Error ? err.message : String(err)}`;
+  }
 }
 
 async function findElement(client, sessionId) {
@@ -285,7 +326,10 @@ async function findElement(client, sessionId) {
     log(`find element: ${elementId} (${selector})`);
     return elementId;
   }
-  throw new StepError('find element', `no selector matched an element:\n${failures.join('\n')}`);
+  throw new StepError(
+    'find element',
+    `no selector matched an element:\n${failures.join('\n')}\n${await describeScreen(client, sessionId)}`,
+  );
 }
 
 async function main() {
