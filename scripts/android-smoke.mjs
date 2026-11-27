@@ -82,7 +82,7 @@ const {values: options} = parseArgs({
   },
 });
 
-const remoteServerUrl = options['remote-server-url'] || process.env.ANDROID_SMOKE_REMOTE_SERVER_URL || undefined;
+const remoteServerUrl = options['remote-server-url'] || undefined;
 const dryRun = options['dry-run'];
 const timeout = Number(process.env.ANDROID_SMOKE_TIMEOUT_MS) || 300_000;
 const appPackage = process.env.ANDROID_SMOKE_APP_PACKAGE || 'com.android.settings';
@@ -99,6 +99,10 @@ if (!existsSync(serverEntry)) {
 
 function log(message) {
   console.log(`[android-smoke] ${message}`);
+}
+
+function errorText(err) {
+  return err instanceof Error ? err.message : String(err);
 }
 
 function textOf(result) {
@@ -152,7 +156,14 @@ async function createSession(client) {
       selectArgs.deviceUdid = process.env.ANDROID_SERIAL;
     }
     const selected = await callTool(client, 'select device', 'select_device', selectArgs);
-    log(`select device: ${textOf(selected).split('\n')[0]}`);
+    const selectedText = textOf(selected);
+    if (!/Device selected/.test(selectedText)) {
+      throw new StepError(
+        'select device',
+        `no device was selected; set ANDROID_SERIAL to one of the listed devices:\n${selectedText}`,
+      );
+    }
+    log(`select device: ${selectedText.match(/Device selected: [^"\n]+/)?.[0] ?? 'done'}`);
   }
 
   const capabilities = {
@@ -240,14 +251,19 @@ async function takeScreenshots(client, sessionId) {
 async function dismissSystemDialogs(client, sessionId) {
   // One more check than taps, so a dialog cleared by the last tap is still noticed.
   for (let attempt = 1; attempt <= MAX_DIALOG_DISMISSALS + 1; attempt++) {
-    const found = await client.callTool(
-      {
-        name: 'appium_find_element',
-        arguments: {strategy: '-android uiautomator', selector: ANR_WAIT_BUTTON, sessionId},
-      },
-      undefined,
-      {timeout},
-    );
+    let found;
+    try {
+      found = await client.callTool(
+        {
+          name: 'appium_find_element',
+          arguments: {strategy: '-android uiautomator', selector: ANR_WAIT_BUTTON, sessionId},
+        },
+        undefined,
+        {timeout},
+      );
+    } catch (err) {
+      throw new StepError('dismiss dialog', `appium_find_element request failed: ${errorText(err)}`);
+    }
     const buttonId = found.isError ? undefined : textOf(found).match(/^elementId '([^']+)'/m)?.[1];
     if (!buttonId) {
       return;
@@ -256,13 +272,24 @@ async function dismissSystemDialogs(client, sessionId) {
       break;
     }
     log(`dismiss dialog: an "isn't responding" dialog is showing, tapping Wait (${attempt}/${MAX_DIALOG_DISMISSALS})`);
-    await callTool(client, 'dismiss dialog', 'appium_gesture', {action: 'tap', elementUUID: buttonId, sessionId});
+    let tapped;
+    try {
+      tapped = await client.callTool(
+        {name: 'appium_gesture', arguments: {action: 'tap', elementUUID: buttonId, sessionId}},
+        undefined,
+        {timeout},
+      );
+    } catch (err) {
+      throw new StepError('dismiss dialog', `appium_gesture request failed: ${errorText(err)}`);
+    }
+    if (tapped.isError) {
+      // The dialog can close on its own between the find and the tap; look again.
+      log(`dismiss dialog: tap failed, the dialog may already be gone (${textOf(tapped).split('\n')[0]})`);
+    }
     await new Promise((resolve) => setTimeout(resolve, 1000));
   }
-  throw new StepError(
-    'dismiss dialog',
-    `an "isn't responding" dialog was still showing after ${MAX_DIALOG_DISMISSALS} taps on Wait`,
-  );
+  // Leave the verdict to the find step, which retries and logs what is on screen.
+  log(`dismiss dialog: an "isn't responding" dialog was still showing after ${MAX_DIALOG_DISMISSALS} taps on Wait`);
 }
 
 /** Log which apps are on screen and save the page source next to the server log, to explain a miss. */
@@ -322,11 +349,18 @@ async function findElement(client, sessionId) {
     }
     // Read the text in the same round: if the screen was still changing, the
     // element can already be gone, and the next round finds a fresh one.
-    const text = await client.callTool(
-      {name: 'appium_get_text', arguments: {elementUUID: elementId, sessionId}},
-      undefined,
-      {timeout},
-    );
+    let text;
+    try {
+      text = await client.callTool(
+        {name: 'appium_get_text', arguments: {elementUUID: elementId, sessionId}},
+        undefined,
+        {timeout},
+      );
+    } catch (err) {
+      failures.push(`get text on ${elementId}: ${errorText(err)}`);
+      log(`get text: request failed, retrying (${errorText(err)})`);
+      continue;
+    }
     if (text.isError) {
       failures.push(`get text on ${elementId}: ${textOf(text).split('\n')[0]}`);
       log(`get text: failed, retrying (${textOf(text).split('\n')[0]})`);
@@ -396,14 +430,13 @@ async function main() {
       throw new StepError('start server', err instanceof Error ? err.message : String(err));
     }
     await checkToolContract(client);
-    if (dryRun) {
-      return;
+    if (!dryRun) {
+      sessionId = await createSession(client);
+      await takeScreenshots(client, sessionId);
+      const elementId = await findElement(client, sessionId);
+      await callTool(client, 'tap', 'appium_gesture', {action: 'tap', elementUUID: elementId, sessionId});
+      log('tap: done');
     }
-    sessionId = await createSession(client);
-    await takeScreenshots(client, sessionId);
-    const elementId = await findElement(client, sessionId);
-    await callTool(client, 'tap', 'appium_gesture', {action: 'tap', elementUUID: elementId, sessionId});
-    log('tap: done');
   } catch (err) {
     failure = err;
   } finally {

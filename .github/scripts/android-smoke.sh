@@ -25,17 +25,37 @@ echo "::endgroup::"
 APPIUM_VERSION="$(node -p "require('./node_modules/appium/package.json').version")"
 UIA2_VERSION="$(node -p "require('./node_modules/appium-uiautomator2-driver/package.json').version")"
 APPIUM_BIN="$PWD/node_modules/.bin/appium"
-export APPIUM_HOME="${RUNNER_TEMP:-/tmp}/appium-home"
-mkdir -p "$APPIUM_HOME"
+# A fresh Appium home per run: Appium refuses to install a driver that is already
+# installed, so a reused home would break the second local run.
+APPIUM_HOME="$(mktemp -d "${RUNNER_TEMP:-/tmp}/appium-home.XXXXXX")"
+export APPIUM_HOME
+appium_pid=""
+# shellcheck disable=SC2329 # invoked by the EXIT trap
+cleanup() {
+  if [ -n "$appium_pid" ]; then
+    kill "$appium_pid" 2>/dev/null || true
+    wait "$appium_pid" 2>/dev/null || true
+  fi
+  rm -rf "$APPIUM_HOME"
+}
+trap cleanup EXIT
 
 echo "::group::Start Appium $APPIUM_VERSION with uiautomator2@$UIA2_VERSION"
-appium_pid=""
-if "$APPIUM_BIN" driver install "uiautomator2@$UIA2_VERSION" 2>&1 | tee "$SMOKE_LOG_DIR/appium-driver-install.log"; then
+ready=""
+if curl -fsS "http://127.0.0.1:$APPIUM_PORT/status" >/dev/null 2>&1; then
+  # Testing against someone else's server would report results for other versions.
+  echo "::error::Port $APPIUM_PORT already serves an Appium server; stop it or set APPIUM_PORT to a free port"
+  status=1
+elif "$APPIUM_BIN" driver install "uiautomator2@$UIA2_VERSION" 2>&1 | tee "$SMOKE_LOG_DIR/appium-driver-install.log"; then
   "$APPIUM_BIN" server --address 127.0.0.1 --port "$APPIUM_PORT" --log-level debug \
     --log "$SMOKE_LOG_DIR/appium-server.log" >/dev/null 2>&1 &
   appium_pid=$!
-  ready=""
   for _ in $(seq 1 60); do
+    if ! kill -0 "$appium_pid" 2>/dev/null; then
+      echo "::error::Appium server exited during startup; see appium-server.log"
+      appium_pid=""
+      break
+    fi
     if curl -fsS "http://127.0.0.1:$APPIUM_PORT/status" >/dev/null 2>&1; then
       ready=1
       break
@@ -43,12 +63,13 @@ if "$APPIUM_BIN" driver install "uiautomator2@$UIA2_VERSION" 2>&1 | tee "$SMOKE_
     sleep 1
   done
   if [ -z "$ready" ]; then
-    echo "::error::Appium server did not answer /status on port $APPIUM_PORT within 60s"
+    if [ -n "$appium_pid" ]; then
+      echo "::error::Appium server did not answer /status on port $APPIUM_PORT within 60s"
+    fi
     status=1
   fi
 else
   echo "::error::Installing uiautomator2@$UIA2_VERSION into Appium $APPIUM_VERSION failed"
-  ready=""
   status=1
 fi
 echo "::endgroup::"
@@ -58,11 +79,6 @@ if [ -n "$ready" ]; then
   ANDROID_SMOKE_SERVER_LOG="$SMOKE_LOG_DIR/mcp-server-remote.log" \
     node scripts/android-smoke.mjs --remote-server-url="http://127.0.0.1:$APPIUM_PORT" || status=1
   echo "::endgroup::"
-fi
-
-if [ -n "$appium_pid" ]; then
-  kill "$appium_pid" 2>/dev/null || true
-  wait "$appium_pid" 2>/dev/null || true
 fi
 
 adb logcat -d > "$SMOKE_LOG_DIR/logcat.txt" 2>/dev/null || true

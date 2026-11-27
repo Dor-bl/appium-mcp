@@ -638,7 +638,7 @@ appium &                                        # remote mode only
 node scripts/android-smoke.mjs --remote-server-url=http://127.0.0.1:4723
 ```
 
-Set `ANDROID_SERIAL` to pick a device when several are connected, `ANDROID_SMOKE_SELECTOR` to tap a different element (a `-android uiautomator` selector), `ANDROID_SMOKE_APP_PACKAGE` / `ANDROID_SMOKE_APP_ACTIVITY` to launch another app, and `ANDROID_SMOKE_SERVER_LOG` to save the MCP server's stderr to a file. `bash .github/scripts/android-smoke.sh` runs the same two passes as CI against whatever emulator is connected.
+Set `ANDROID_SERIAL` to pick a device when several are connected (the script fails rather than guess), `ANDROID_SMOKE_SELECTOR` to tap a different element (a `-android uiautomator` selector), `ANDROID_SMOKE_APP_PACKAGE` / `ANDROID_SMOKE_APP_ACTIVITY` to launch another app, and `ANDROID_SMOKE_SERVER_LOG` to save the MCP server's stderr to a file. `bash .github/scripts/android-smoke.sh` runs the same two passes as CI against whatever emulator is connected. It installs the driver into a fresh temporary Appium home on each run and refuses to start if `APPIUM_PORT` (default 4723) already serves a server, so stop any Appium you started yourself first.
 
 ---
 
