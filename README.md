@@ -1026,6 +1026,8 @@ The AI will handle your requests naturally and generate the appropriate test cod
 
 Contributions are welcome! Please feel free to submit a pull request or open an issue to discuss any changes.
 
+CI also runs an Android emulator end-to-end smoke test against the real UiAutomator2 driver. See [Android emulator smoke test](docs/CONTRIBUTING.md#5-android-emulator-smoke-test) for what it covers and how to run it locally.
+
 ## 📄 License
 
 This project is licensed under the Apache-2.0. See the [LICENSE](LICENSE) file for details.
