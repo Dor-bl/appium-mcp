@@ -14,6 +14,18 @@ mkdir -p "$SMOKE_LOG_DIR"
 
 adb devices -l
 
+# Pick one device for both passes. Without a serial, UiAutomator2 drives the
+# first connected device, which could be a phone rather than the emulator.
+if [ -z "${ANDROID_SERIAL:-}" ]; then
+  mapfile -t serials < <(adb devices | awk 'NR > 1 && $2 == "device" {print $1}')
+  if [ "${#serials[@]}" -ne 1 ]; then
+    echo "::error::Found ${#serials[@]} ready Android devices; set ANDROID_SERIAL to the one to test"
+    exit 1
+  fi
+  export ANDROID_SERIAL="${serials[0]}"
+fi
+echo "Testing on $ANDROID_SERIAL"
+
 status=0
 
 echo "::group::Smoke test: embedded driver"

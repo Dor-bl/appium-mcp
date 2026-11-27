@@ -15,7 +15,8 @@
  *   node scripts/android-smoke.mjs --dry-run             # no device: check tool names and argument shapes only
  *
  * Environment overrides:
- *   ANDROID_SERIAL               udid of the device to use when several are connected
+ *   ANDROID_SERIAL               udid of the device to use; required in remote mode and
+ *                                when several devices are connected
  *   ANDROID_SMOKE_APP_PACKAGE    app to launch (default com.android.settings)
  *   ANDROID_SMOKE_APP_ACTIVITY   activity to launch (default .Settings)
  *   ANDROID_SMOKE_SELECTOR       -android uiautomator selector of the element to tap
@@ -178,9 +179,16 @@ async function createSession(client) {
     capabilities.platformName = 'Android';
     capabilities['appium:automationName'] = 'UiAutomator2';
     capabilities['appium:deviceName'] = 'Android Emulator';
-    if (process.env.ANDROID_SERIAL) {
-      capabilities['appium:udid'] = process.env.ANDROID_SERIAL;
+    // Without a udid UiAutomator2 drives the first connected device, which could
+    // be a phone rather than the emulator, and this script cannot list the
+    // remote server's devices to check.
+    if (!process.env.ANDROID_SERIAL) {
+      throw new StepError(
+        'create session',
+        'remote mode needs ANDROID_SERIAL set to the target device udid (see `adb devices`)',
+      );
     }
+    capabilities['appium:udid'] = process.env.ANDROID_SERIAL;
   }
 
   const args = {action: 'create', platform: 'android', capabilities: JSON.stringify(capabilities)};
@@ -221,7 +229,7 @@ async function takeScreenshots(client, sessionId) {
   }
   const bytes = Buffer.from(image.data, 'base64');
   const inlineWidth = pngWidth(bytes);
-  if (inlineWidth === undefined) {
+  if (!inlineWidth) {
     throw new StepError('screenshot (inline)', `image is not a non-empty PNG (${bytes.length} bytes)`);
   }
   if (inlineWidth > SCREENSHOT_MAX_WIDTH) {
@@ -241,8 +249,11 @@ async function takeScreenshots(client, sessionId) {
     throw new StepError('screenshot (file)', `screenshot file missing or empty: ${textOf(saved)}`);
   }
   const fullWidth = pngWidth(readFileSync(filepath));
+  if (!fullWidth) {
+    throw new StepError('screenshot (file)', `${filepath} is not a PNG (${statSync(filepath).size} bytes)`);
+  }
   log(`screenshot (file): ${filepath}, ${fullWidth}px wide, ${statSync(filepath).size} bytes`);
-  if (fullWidth !== undefined && fullWidth <= SCREENSHOT_MAX_WIDTH) {
+  if (fullWidth <= SCREENSHOT_MAX_WIDTH) {
     log(`warning: the screen is only ${fullWidth}px wide, so maxWidth=${SCREENSHOT_MAX_WIDTH} did not resize anything`);
   }
 }
